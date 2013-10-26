@@ -24,10 +24,8 @@ func main() {
 }
 
 //TODO
-// ftp
-// no-scheme
+// ftp (3rd party supp?)
 // clobber behaviour
-// progress
 // limit-rate
 // timeouts - connect,read,dns?
 // wait,waitretry
@@ -41,9 +39,10 @@ func main() {
 // wgetrc
 type WgetOptions struct {
 	IsContinue *bool
-	Filename *string
+	OutputFilename *string
 	Timeout *int //TODO timeout
 	Retries *int //TODO retries
+	IsVerbose *bool
 }
 
 const (
@@ -55,7 +54,8 @@ func Wget(call []string) error {
 	options := WgetOptions{}
 	flagSet := flag.NewFlagSet("wget", flag.ContinueOnError)
 	options.IsContinue = flagSet.Bool("c", false, "continue")
-	options.Filename = flagSet.String("o", "", "output filename")
+	options.OutputFilename = flagSet.String("o", "", "output filename")
+	options.IsVerbose = flagSet.Bool("v", false, "verbose")
 	helpFlag := flagSet.Bool("help", false, "Show this help")
 
 	err := flagSet.Parse(uggo.Gnuify(call[1:]))
@@ -116,8 +116,8 @@ func wgetOne(link string, options WgetOptions) error {
 	}
 
 	filename := ""
-	if *options.Filename != "" {
-		filename = *options.Filename
+	if *options.OutputFilename != "" {
+		filename = *options.OutputFilename
 	}
 	client := &http.Client{}
 	//continue from where we left off ...
@@ -134,6 +134,10 @@ func wgetOne(link string, options WgetOptions) error {
 			return err
 		}
 		from := fi.Size()
+		rangeHeader := fmt.Sprintf("bytes=%d-", from)
+		/*
+		NOTE: this could be added as an option later. ...
+		//not needed
 		headRequest, err := http.NewRequest("HEAD", link, nil)
 		if err != nil {
 			return err
@@ -142,13 +146,22 @@ func wgetOne(link string, options WgetOptions) error {
 		if err != nil {
 			return err
 		}
+			
 		cl := headResp.Header.Get("Content-Length")
 		if cl != "" {
-		rangeHeader := fmt.Sprintf("bytes %d-%s", from, cl)
-		fmt.Printf("Adding range header: %s\n", rangeHeader)
-		request.Header.Add("Range", rangeHeader)
+			rangeHeader = fmt.Sprintf("bytes=%d-%s", from, cl)
+			if *options.IsVerbose {
+				fmt.Printf("Adding range header: %s\n", rangeHeader)
+			}
 		} else {
 			fmt.Println("Could not find file length using HEAD request")
+		}
+		*/
+		request.Header.Add("Range", rangeHeader)
+	}
+	if *options.IsVerbose {
+		for headerName, headerValue := range request.Header {
+			fmt.Printf("Request header %s: %s\n", headerName, headerValue)
 		}
 	}
 	resp, err := client.Do(request)
@@ -156,27 +169,47 @@ func wgetOne(link string, options WgetOptions) error {
 		return err
 	}
 	defer resp.Body.Close()
-	fmt.Printf("Http response: %s\n", resp.Status)
-
+	fmt.Printf("Http response status: %s\n", resp.Status)
+	if *options.IsVerbose {
+		for headerName, headerValue := range resp.Header {
+			fmt.Printf("Response header %s: %s\n", headerName, headerValue)
+		}
+	}
 	lenS := resp.Header.Get("Content-Length")
-	len := int64(-1)
+	length := int64(-1)
 	if lenS != "" {
-		len, err = strconv.ParseInt(lenS, 10, 32)
+		length, err = strconv.ParseInt(lenS, 10, 32)
 		if err != nil {
 			return err
 		}
 	}
+
 	typ := resp.Header.Get("Content-Type")
-	fmt.Printf("Length: %v [%s]\n", len, typ)
+	fmt.Printf("Content-Length: %v Content-Type: %s\n", lenS, typ)
 
 	if filename == "" {
-		filename, err = getFilename(resp)
+		filename, err = getFilename(request, resp)
 		if err != nil {
 			return err
 		}
 	}
+	
+	contentRange := resp.Header.Get("Content-Range")
+	rangeEffective := false
+	if contentRange != "" {
+		//TODO parse it?
+		rangeEffective = true
+	} else if *options.IsContinue {
+		fmt.Printf("Range request did not produce a Content-Range response\n")
+	}
 	fmt.Printf("Saving to: '%v'\n\n", filename)
-	out, err := os.Create(filename)
+	var openFlags int
+	if *options.IsContinue && rangeEffective {
+		openFlags = os.O_WRONLY | os.O_APPEND
+	} else {
+		openFlags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	}
+	out, err := os.OpenFile(filename, openFlags, FILEMODE)
 	if err != nil {
 		return err
 	}
@@ -189,7 +222,7 @@ func wgetOne(link string, options WgetOptions) error {
 	for {
         // read a chunk
         n, err := resp.Body.Read(buf)
-        if err != nil && err != io.EOF { 
+        if err != nil && err != io.EOF {
 			return err
 		}
         if n == 0 { break }
@@ -200,17 +233,17 @@ func wgetOne(link string, options WgetOptions) error {
             return err
         }
 		i+=1
-		if len > -1 {
-			if len < 1 {
+		if length > -1 {
+			if length < 1 {
 				fmt.Printf("\r     [ <=>                                  ] %d\t-.--KB/s eta ?s             ", tot)
 			} else {
 				//show percentage
-				perc := (100 * tot) / len
+				perc := (100 * tot) / length
 				prog := progress(perc)
 				nowTime := time.Now()
 				totTime := nowTime.Sub(startTime)
 				spd := float64(tot / 1000) / totTime.Seconds()
-				remKb := float64(len - tot) / float64(1000)
+				remKb := float64(length - tot) / float64(1000)
 				eta :=  remKb / spd
 				fmt.Printf("\r%3d%% [%s] %d\t%0.2fKB/s eta %0.1fs             ", perc, prog, tot, spd, eta)
 			}
@@ -221,17 +254,17 @@ func wgetOne(link string, options WgetOptions) error {
 			}
 		}
     }
-	perc := (100 * tot) / len
+	perc := (100 * tot) / length
 	prog := progress(perc)
 	nowTime := time.Now()
 	totTime := nowTime.Sub(startTime)
 	spd := float64(tot / 1000) / totTime.Seconds()
-	if len < 1 {
+	if length < 1 {
 		fmt.Printf("\r     [ <=>                                  ] %d\t-.--KB/s in %0.1fs             ", tot, totTime.Seconds())
 		fmt.Printf("\n (%0.2fKB/s) - '%v' saved [%v]\n", spd, filename, tot)
 	} else {
 		fmt.Printf("\r%3d%% [%s] %d\t%0.2fKB/s in %0.1fs             ", perc, prog, tot, spd, totTime.Seconds())
-		fmt.Printf("\n '%v' saved [%v/%v]\n", filename, tot, len)
+		fmt.Printf("\n '%v' saved [%v/%v]\n", filename, tot, length)
 	}
 	if err != nil {
 		return err
@@ -253,8 +286,13 @@ func progress(perc int64) string {
 	return prog 
 }
 
-func getFilename(resp *http.Response) (string, error) {
-	filename := filepath.Base(resp.Request.URL.Path)
+func getFilename(request *http.Request, resp *http.Response) (string, error) {
+	filename := filepath.Base(request.URL.Path)
+	
+	if !strings.Contains(filename, ".") {
+		//original link didnt represent the file type. Try using the response url (after redirects)
+		filename = filepath.Base(resp.Request.URL.Path)
+	}
 	filename = tidyFilename(filename)
 
 	if !strings.Contains(filename, ".") {

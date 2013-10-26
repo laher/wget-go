@@ -16,7 +16,11 @@ import (
 	"time"
 )
 func main() {
-	Wget(os.Args)
+	err := Wget(os.Args)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 //TODO
@@ -153,7 +157,7 @@ func wgetOne(link string, options WgetOptions) error {
 	}
 	defer resp.Body.Close()
 	fmt.Printf("Http response: %s\n", resp.Status)
-	
+
 	lenS := resp.Header.Get("Content-Length")
 	len := int64(-1)
 	if lenS != "" {
@@ -164,9 +168,8 @@ func wgetOne(link string, options WgetOptions) error {
 	}
 	typ := resp.Header.Get("Content-Type")
 	fmt.Printf("Length: %v [%s]\n", len, typ)
-	
-	defer resp.Body.Close()
-	if filename == "" {	
+
+	if filename == "" {
 		filename, err = getFilename(resp)
 		if err != nil {
 			return err
@@ -178,11 +181,11 @@ func wgetOne(link string, options WgetOptions) error {
 		return err
 	}
 	defer out.Close()
-	
+
 	buf := make([]byte, 4068)
 	tot := int64(0)
 	i := 0
-	
+
 	for {
         // read a chunk
         n, err := resp.Body.Read(buf)

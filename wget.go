@@ -5,6 +5,7 @@ import (
 	"github.com/laher/wget-go/wget"
 	"os"
 )
+
 func main() {
 	err := wget.Wget(os.Args)
 	if err != nil {
@@ -12,4 +13,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-

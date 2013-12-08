@@ -49,7 +49,7 @@ type WgetOptions struct {
 }
 
 const (
-	VERSION              = "0.1.2"
+	VERSION              = "0.1.3"
 	FILEMODE os.FileMode = 0660
 )
 

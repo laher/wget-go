@@ -32,13 +32,24 @@ import (
 type WgetOptions struct {
 	IsContinue     bool
 	OutputFilename string
-	Timeout        int //TODO timeout
-	Retries        int //TODO retries
-	IsVerbose      bool
+	Timeout        int //TODO
+	Retries        int //TODO
+	IsVerbose      bool //todo
+	DefaultPage    string
+	UserAgent      string //todo
+	ProxyUser	string //todo
+	ProxyPassword	string //todo
+	Referer		string //todo
+	SaveHeaders	bool //todo
+	PostData	string //todo
+	HttpUser	string //todo
+	HttpPassword    string //todo
+	IsNoCheckCertificate bool
+	SecureProtocol string
 }
 
 const (
-	VERSION              = "0.1.1"
+	VERSION              = "0.1.2"
 	FILEMODE os.FileMode = 0660
 )
 
@@ -46,10 +57,13 @@ func Wget(call []string) error {
 
 	options := WgetOptions{}
 	flagSet := uggo.NewFlagSetDefault("wget", "[options] URL", VERSION)
-	flagSet.BoolVar(&options.IsContinue, "c", false, "continue")
-	flagSet.StringVar(&options.OutputFilename, "o", "", "output filename")
-	flagSet.BoolVar(&options.IsVerbose, "v", false, "verbose")
-
+	flagSet.AliasedBoolVar(&options.IsContinue, []string{"c", "continue"}, false, "continue")
+	flagSet.AliasedStringVar(&options.OutputFilename, []string{"O","output-document"}, "", "specify filename")
+	flagSet.StringVar(&options.DefaultPage, "default-page", "index.html", "default page name")
+	flagSet.BoolVar(&options.IsNoCheckCertificate, "no-check-certificate", false, "skip certificate checks")
+	//flagSet.BoolVar(&options.IsVerbose, "v", false, "verbose")
+	//some options are implemented in go-1.2+ only
+	extraOptions(flagSet, options)
 	err := flagSet.Parse(call[1:])
 	if err != nil {
 		flagSet.Usage()
@@ -89,10 +103,11 @@ func wget(links []string, options WgetOptions) error {
 	return nil
 }
 
-func tidyFilename(filename string) string {
+func tidyFilename(filename, defaultFilename string) string {
 	//invalid filenames ...
 	if filename == "" || filename == "/" || filename == "\\" || filename == "." {
-		filename = "index"
+		filename = defaultFilename
+		//filename = "index"
 	}
 	return filename
 }
@@ -112,15 +127,23 @@ func wgetOne(link string, options WgetOptions) error {
 	if options.OutputFilename != "" {
 		filename = options.OutputFilename
 	}
-	client := &http.Client{}
+
+	tr, err := getHttpTransport(options)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Transport: tr}
+
 	//continue from where we left off ...
 	if options.IsContinue {
+		//not specified
 		if filename == "" {
 			filename = filepath.Base(request.URL.Path)
-			filename = tidyFilename(filename)
-			if !strings.Contains(filename, ".") {
-				filename = filename + ".html"
-			}
+			filename = tidyFilename(filename, options.DefaultPage)
+		
+		}
+		if !strings.Contains(filename, ".") {
+			filename = filename + ".html"
 		}
 		fi, err := os.Stat(filename)
 		if err != nil {
@@ -181,7 +204,7 @@ func wgetOne(link string, options WgetOptions) error {
 	fmt.Printf("Content-Length: %v Content-Type: %s\n", lenS, typ)
 
 	if filename == "" {
-		filename, err = getFilename(request, resp)
+		filename, err = getFilename(request, resp, options)
 		if err != nil {
 			return err
 		}
@@ -249,8 +272,7 @@ func wgetOne(link string, options WgetOptions) error {
 			}
 		}
 	}
-	perc := (100 * tot) / length
-	prog := progress(perc)
+	
 	nowTime := time.Now()
 	totTime := nowTime.Sub(startTime)
 	spd := float64(tot/1000) / totTime.Seconds()
@@ -258,6 +280,8 @@ func wgetOne(link string, options WgetOptions) error {
 		fmt.Printf("\r     [ <=>                                  ] %d\t-.--KB/s in %0.1fs             ", tot, totTime.Seconds())
 		fmt.Printf("\n (%0.2fKB/s) - '%v' saved [%v]\n", spd, filename, tot)
 	} else {
+		perc := (100 * tot) / length
+		prog := progress(perc)
 		fmt.Printf("\r%3d%% [%s] %d\t%0.2fKB/s in %0.1fs             ", perc, prog, tot, spd, totTime.Seconds())
 		fmt.Printf("\n '%v' saved [%v/%v]\n", filename, tot, length)
 	}
@@ -281,14 +305,14 @@ func progress(perc int64) string {
 	return prog
 }
 
-func getFilename(request *http.Request, resp *http.Response) (string, error) {
+func getFilename(request *http.Request, resp *http.Response, options WgetOptions) (string, error) {
 	filename := filepath.Base(request.URL.Path)
 
 	if !strings.Contains(filename, ".") {
 		//original link didnt represent the file type. Try using the response url (after redirects)
 		filename = filepath.Base(resp.Request.URL.Path)
 	}
-	filename = tidyFilename(filename)
+	filename = tidyFilename(filename, options.DefaultPage)
 
 	if !strings.Contains(filename, ".") {
 		ct := resp.Header.Get("Content-Type")

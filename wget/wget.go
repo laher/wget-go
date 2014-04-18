@@ -1,6 +1,8 @@
+// Wgetter downloads and saves/pipes HTTP requests
 package wget
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"github.com/laher/uggo"
@@ -29,8 +31,10 @@ import (
 // recursive downloads
 // timestamping
 // wgetrc
-type WgetOptions struct {
+type Wgetter struct {
 	IsContinue     bool
+	// should be set explicitly to false when running from CLI. uggo will detect as best as possible
+	AlwaysPipeStdin   bool 
 	OutputFilename string
 	Timeout        int //TODO
 	Retries        int //TODO
@@ -46,61 +50,121 @@ type WgetOptions struct {
 	HttpPassword    string //todo
 	IsNoCheckCertificate bool
 	SecureProtocol string
+
+	links []string
 }
 
 const (
-	VERSION              = "0.1.3"
+	VERSION              = "0.5.0"
 	FILEMODE os.FileMode = 0660
 )
 
-func Wget(call []string) error {
+//Factory for wgetter which outputs to Stdout
+func WgetToOut(urls ...string) *Wgetter {
+	wgetter := Wget(urls...)
+	wgetter.OutputFilename = "-"
+	return wgetter
+}
 
-	options := WgetOptions{}
-	flagSet := uggo.NewFlagSetDefault("wget", "[options] URL", VERSION)
-	flagSet.AliasedBoolVar(&options.IsContinue, []string{"c", "continue"}, false, "continue")
-	flagSet.AliasedStringVar(&options.OutputFilename, []string{"O","output-document"}, "", "specify filename")
-	flagSet.StringVar(&options.DefaultPage, "default-page", "index.html", "default page name")
-	flagSet.BoolVar(&options.IsNoCheckCertificate, "no-check-certificate", false, "skip certificate checks")
-	//flagSet.BoolVar(&options.IsVerbose, "v", false, "verbose")
-	//some options are implemented in go-1.2+ only
-	extraOptions(flagSet, options)
-	err := flagSet.Parse(call[1:])
+// Factory for wgetter
+func Wget(urls ...string) *Wgetter {
+	wgetter := new(Wgetter)
+	wgetter.links = urls
+	if len(urls) == 0 {
+		wgetter.AlwaysPipeStdin = true
+	}
+	return wgetter
+}
+
+// CLI invocation for wgetter
+func WgetCli(call []string) (error, int) {
+	inPipe := os.Stdin
+	outPipe := os.Stdout
+	errPipe := os.Stderr
+	wgetter := new(Wgetter)
+	wgetter.AlwaysPipeStdin = false
+	err, code := wgetter.ParseFlags(call, errPipe)
 	if err != nil {
-		flagSet.Usage()
-		fmt.Fprintf(os.Stderr, "Flag error:  %v\n\n", err.Error())
-		return err
+		return err, code
 	}
-	if flagSet.ProcessHelpOrVersion() {
-		return nil
+	return wgetter.Exec(inPipe, outPipe, errPipe)
+}
+
+// Name() returns the name of the util
+func (tail *Wgetter) Name() string {
+	return "wget"
+}
+// Parse CLI flags
+func (w *Wgetter) ParseFlags(call []string, errPipe io.Writer) (error, int) {
+
+	flagSet := uggo.NewFlagSetDefault("wget", "[options] URL", VERSION)
+	flagSet.SetOutput(errPipe)
+	flagSet.AliasedBoolVar(&w.IsContinue, []string{"c", "continue"}, false, "continue")
+	flagSet.AliasedStringVar(&w.OutputFilename, []string{"O","output-document"}, "", "specify filename")
+	flagSet.StringVar(&w.DefaultPage, "default-page", "index.html", "default page name")
+	flagSet.BoolVar(&w.IsNoCheckCertificate, "no-check-certificate", false, "skip certificate checks")
+
+	//some features are available in go-1.2+ only
+	extraOptions(flagSet, w)
+	err, code := flagSet.ParsePlus(call[1:])
+	if err != nil {
+		return err, code
 	}
+
+	//fmt.Fprintf(errPipe, "%+v\n", w)
 	args := flagSet.Args()
 	if len(args) < 1 {
 		flagSet.Usage()
-		return errors.New("Not enough args")
+		return errors.New("Not enough args"), 1
 	}
 	if len(args) > 0 {
-		links := args
-		return wget(links, options)
+		w.links = args
+		//return wget(links, w)
+		return nil, 0
 	} else {
-		if uggo.IsPipingStdin() {
+		if w.AlwaysPipeStdin || uggo.IsPipingStdin() {
 			//check STDIN
-			return wget([]string{}, options)
+			//return wget([]string{}, options)
+			return nil, 0
 		} else {
 			//NOT piping.
 			flagSet.Usage()
-			return errors.New("Not enough args")
+			return errors.New("Not enough args"), 1
 		}
 	}
 }
 
-func wget(links []string, options WgetOptions) error {
-	for _, link := range links {
-		err := wgetOne(link, options)
-		if err != nil {
-			return err
+// Perform the wget ...
+func (w *Wgetter) Exec(inPipe io.Reader, outPipe io.Writer, errPipe io.Writer) (error, int) {
+	if len(w.links) > 0 {
+		for _, link := range w.links {
+			err := wgetOne(link, w, outPipe, errPipe)
+			if err != nil {
+				return err, 1
+			}
 		}
+	} else {
+			bio := bufio.NewReader(inPipe)
+			hasMoreInLine := true
+			var err error
+			var line []byte
+			for hasMoreInLine {
+				line, hasMoreInLine, err = bio.ReadLine()
+				if err == nil {
+					//line from stdin
+					err = wgetOne(strings.TrimSpace(string(line)), w, outPipe, errPipe)
+
+					if err != nil {
+						return err, 1
+					}
+				} else {
+					//finish
+					hasMoreInLine = false
+				}
+			}
+
 	}
-	return nil
+	return nil, 0
 }
 
 func tidyFilename(filename, defaultFilename string) string {
@@ -112,7 +176,7 @@ func tidyFilename(filename, defaultFilename string) string {
 	return filename
 }
 
-func wgetOne(link string, options WgetOptions) error {
+func wgetOne(link string, options *Wgetter, outPipe io.Writer, errPipe io.Writer) error {
 	if !strings.Contains(link, ":") {
 		link = "http://" + link
 	}
@@ -124,6 +188,7 @@ func wgetOne(link string, options WgetOptions) error {
 	}
 
 	filename := ""
+	//include stdout
 	if options.OutputFilename != "" {
 		filename = options.OutputFilename
 	}
@@ -136,11 +201,13 @@ func wgetOne(link string, options WgetOptions) error {
 
 	//continue from where we left off ...
 	if options.IsContinue {
+		if options.OutputFilename == "-" {
+			return errors.New("Continue not supported while piping")
+		}
 		//not specified
 		if filename == "" {
 			filename = filepath.Base(request.URL.Path)
 			filename = tidyFilename(filename, options.DefaultPage)
-		
 		}
 		if !strings.Contains(filename, ".") {
 			filename = filename + ".html"
@@ -167,7 +234,7 @@ func wgetOne(link string, options WgetOptions) error {
 			if cl != "" {
 				rangeHeader = fmt.Sprintf("bytes=%d-%s", from, cl)
 				if options.IsVerbose {
-					fmt.Printf("Adding range header: %s\n", rangeHeader)
+					fmt.Fprintf(errPipe, "Adding range header: %s\n", rangeHeader)
 				}
 			} else {
 				fmt.Println("Could not find file length using HEAD request")
@@ -177,7 +244,7 @@ func wgetOne(link string, options WgetOptions) error {
 	}
 	if options.IsVerbose {
 		for headerName, headerValue := range request.Header {
-			fmt.Printf("Request header %s: %s\n", headerName, headerValue)
+			fmt.Fprintf(errPipe, "Request header %s: %s\n", headerName, headerValue)
 		}
 	}
 	resp, err := client.Do(request)
@@ -185,10 +252,10 @@ func wgetOne(link string, options WgetOptions) error {
 		return err
 	}
 	defer resp.Body.Close()
-	fmt.Printf("Http response status: %s\n", resp.Status)
+	fmt.Fprintf(errPipe, "Http response status: %s\n", resp.Status)
 	if options.IsVerbose {
 		for headerName, headerValue := range resp.Header {
-			fmt.Printf("Response header %s: %s\n", headerName, headerValue)
+			fmt.Fprintf(errPipe, "Response header %s: %s\n", headerName, headerValue)
 		}
 	}
 	lenS := resp.Header.Get("Content-Length")
@@ -201,10 +268,10 @@ func wgetOne(link string, options WgetOptions) error {
 	}
 
 	typ := resp.Header.Get("Content-Type")
-	fmt.Printf("Content-Length: %v Content-Type: %s\n", lenS, typ)
+	fmt.Fprintf(errPipe, "Content-Length: %v Content-Type: %s\n", lenS, typ)
 
 	if filename == "" {
-		filename, err = getFilename(request, resp, options)
+		filename, err = getFilename(request, resp, options, errPipe)
 		if err != nil {
 			return err
 		}
@@ -216,21 +283,28 @@ func wgetOne(link string, options WgetOptions) error {
 		//TODO parse it?
 		rangeEffective = true
 	} else if options.IsContinue {
-		fmt.Printf("Range request did not produce a Content-Range response\n")
+		fmt.Fprintf(errPipe, "Range request did not produce a Content-Range response\n")
 	}
-	fmt.Printf("Saving to: '%v'\n\n", filename)
-	var openFlags int
-	if options.IsContinue && rangeEffective {
-		openFlags = os.O_WRONLY | os.O_APPEND
+	var out io.Writer
+	var outFile *os.File
+	if filename != "-" {
+		fmt.Fprintf(errPipe, "Saving to: '%v'\n\n", filename)
+		var openFlags int
+		if options.IsContinue && rangeEffective {
+			openFlags = os.O_WRONLY | os.O_APPEND
+		} else {
+			openFlags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+		}
+		outFile, err = os.OpenFile(filename, openFlags, FILEMODE)
+		if err != nil {
+			return err
+		}
+		defer outFile.Close()
+		out = outFile
 	} else {
-		openFlags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+		//save to outPipe
+		out = outPipe
 	}
-	out, err := os.OpenFile(filename, openFlags, FILEMODE)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
 	buf := make([]byte, 4068)
 	tot := int64(0)
 	i := 0
@@ -253,7 +327,7 @@ func wgetOne(link string, options WgetOptions) error {
 		i += 1
 		if length > -1 {
 			if length < 1 {
-				fmt.Printf("\r     [ <=>                                  ] %d\t-.--KB/s eta ?s             ", tot)
+				fmt.Fprintf(errPipe, "\r     [ <=>                                  ] %d\t-.--KB/s eta ?s             ", tot)
 			} else {
 				//show percentage
 				perc := (100 * tot) / length
@@ -263,32 +337,33 @@ func wgetOne(link string, options WgetOptions) error {
 				spd := float64(tot/1000) / totTime.Seconds()
 				remKb := float64(length-tot) / float64(1000)
 				eta := remKb / spd
-				fmt.Printf("\r%3d%% [%s] %d\t%0.2fKB/s eta %0.1fs             ", perc, prog, tot, spd, eta)
+				fmt.Fprintf(errPipe, "\r%3d%% [%s] %d\t%0.2fKB/s eta %0.1fs             ", perc, prog, tot, spd, eta)
 			}
 		} else {
 			//show dots
 			if math.Mod(float64(i), 20) == 0 {
-				fmt.Print(".")
+				fmt.Fprint(errPipe, ".")
 			}
 		}
 	}
-	
 	nowTime := time.Now()
 	totTime := nowTime.Sub(startTime)
 	spd := float64(tot/1000) / totTime.Seconds()
 	if length < 1 {
-		fmt.Printf("\r     [ <=>                                  ] %d\t-.--KB/s in %0.1fs             ", tot, totTime.Seconds())
-		fmt.Printf("\n (%0.2fKB/s) - '%v' saved [%v]\n", spd, filename, tot)
+		fmt.Fprintf(errPipe, "\r     [ <=>                                  ] %d\t-.--KB/s in %0.1fs             ", tot, totTime.Seconds())
+		fmt.Fprintf(errPipe, "\n (%0.2fKB/s) - '%v' saved [%v]\n", spd, filename, tot)
 	} else {
 		perc := (100 * tot) / length
 		prog := progress(perc)
-		fmt.Printf("\r%3d%% [%s] %d\t%0.2fKB/s in %0.1fs             ", perc, prog, tot, spd, totTime.Seconds())
-		fmt.Printf("\n '%v' saved [%v/%v]\n", filename, tot, length)
+		fmt.Fprintf(errPipe, "\r%3d%% [%s] %d\t%0.2fKB/s in %0.1fs             ", perc, prog, tot, spd, totTime.Seconds())
+		fmt.Fprintf(errPipe, "\n '%v' saved [%v/%v]\n", filename, tot, length)
 	}
 	if err != nil {
 		return err
 	}
-	err = out.Close()
+	if outFile != nil {
+		err = outFile.Close()
+	}
 	return err
 }
 
@@ -305,7 +380,7 @@ func progress(perc int64) string {
 	return prog
 }
 
-func getFilename(request *http.Request, resp *http.Response, options WgetOptions) (string, error) {
+func getFilename(request *http.Request, resp *http.Response, options *Wgetter, errPipe io.Writer) (string, error) {
 	filename := filepath.Base(request.URL.Path)
 
 	if !strings.Contains(filename, ".") {
@@ -320,9 +395,9 @@ func getFilename(request *http.Request, resp *http.Response, options WgetOptions
 		ext := "htm"
 		mediatype, _, err := mime.ParseMediaType(ct)
 		if err != nil {
-			fmt.Printf("mime error: %v\n", err)
+			fmt.Fprintf(errPipe, "mime error: %v\n", err)
 		} else {
-			fmt.Printf("mime type: %v (from Content-Type %v)\n", mediatype, ct)
+			fmt.Fprintf(errPipe, "mime type: %v (from Content-Type %v)\n", mediatype, ct)
 			slash := strings.Index(mediatype, "/")
 			if slash != -1 {
 				_, sub := mediatype[:slash], mediatype[slash+1:]

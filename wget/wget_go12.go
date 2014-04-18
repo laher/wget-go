@@ -9,11 +9,11 @@ import(
 	"net/http"
 )
 
-func extraOptions(flagSet uggo.FlagSetWithAliases, options WgetOptions) {
+func extraOptions(flagSet uggo.FlagSetWithAliases, options *Wgetter) {
 	flagSet.StringVar(&options.SecureProtocol, "secure-protocol", "auto", "secure protocol to be used (auto/SSLv2/SSLv3/TLSv1)")
 }
 
-func getHttpTransport(options WgetOptions) (*http.Transport, error) {
+func getHttpTransport(options *Wgetter) (*http.Transport, error) {
 	minSecureProtocol := uint16(0)
 	maxSecureProtocol := uint16(0)
 	switch options.SecureProtocol {

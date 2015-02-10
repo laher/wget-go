@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	err := wget.Wget(os.Args)
+	err := wget.Wget(os.Args...)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)

@@ -1,4 +1,11 @@
 {
 	"PackageVersion": "0.5.0",
+	"TaskSettings": {
+		"publish-github": {
+			"owner": "laher",
+			"repository": "wget-go",
+			"prerelease": true
+		}
+	},
 	"ConfigVersion": "0.9"
 }

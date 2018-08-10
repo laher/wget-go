@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"github.com/laher/uggo"
 	"io"
 	"math"
 	"mime"
@@ -15,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fatih/color"
+	"github.com/laher/uggo"
 )
 
 //TODO
@@ -32,24 +34,24 @@ import (
 // timestamping
 // wgetrc
 type Wgetter struct {
-	IsContinue     bool
+	IsContinue bool
 	// should be set explicitly to false when running from CLI. uggo will detect as best as possible
-	AlwaysPipeStdin   bool 
-	OutputFilename string
-	Timeout        int //TODO
-	Retries        int //TODO
-	IsVerbose      bool //todo
-	DefaultPage    string
-	UserAgent      string //todo
-	ProxyUser	string //todo
-	ProxyPassword	string //todo
-	Referer		string //todo
-	SaveHeaders	bool //todo
-	PostData	string //todo
-	HttpUser	string //todo
-	HttpPassword    string //todo
+	AlwaysPipeStdin      bool
+	OutputFilename       string
+	Timeout              int  //TODO
+	Retries              int  //TODO
+	IsVerbose            bool //todo
+	DefaultPage          string
+	UserAgent            string //todo
+	ProxyUser            string //todo
+	ProxyPassword        string //todo
+	Referer              string //todo
+	SaveHeaders          bool   //todo
+	PostData             string //todo
+	HttpUser             string //todo
+	HttpPassword         string //todo
 	IsNoCheckCertificate bool
-	SecureProtocol string
+	SecureProtocol       string
 
 	links []string
 }
@@ -94,13 +96,14 @@ func WgetCli(call []string) (error, int) {
 func (tail *Wgetter) Name() string {
 	return "wget"
 }
+
 // Parse CLI flags
 func (w *Wgetter) ParseFlags(call []string, errPipe io.Writer) (error, int) {
 
 	flagSet := uggo.NewFlagSetDefault("wget", "[options] URL", VERSION)
 	flagSet.SetOutput(errPipe)
 	flagSet.AliasedBoolVar(&w.IsContinue, []string{"c", "continue"}, false, "continue")
-	flagSet.AliasedStringVar(&w.OutputFilename, []string{"O","output-document"}, "", "specify filename")
+	flagSet.AliasedStringVar(&w.OutputFilename, []string{"O", "output-document"}, "", "specify filename")
 	flagSet.StringVar(&w.DefaultPage, "default-page", "index.html", "default page name")
 	flagSet.BoolVar(&w.IsNoCheckCertificate, "no-check-certificate", false, "skip certificate checks")
 
@@ -144,24 +147,24 @@ func (w *Wgetter) Exec(inPipe io.Reader, outPipe io.Writer, errPipe io.Writer) (
 			}
 		}
 	} else {
-			bio := bufio.NewReader(inPipe)
-			hasMoreInLine := true
-			var err error
-			var line []byte
-			for hasMoreInLine {
-				line, hasMoreInLine, err = bio.ReadLine()
-				if err == nil {
-					//line from stdin
-					err = wgetOne(strings.TrimSpace(string(line)), w, outPipe, errPipe)
+		bio := bufio.NewReader(inPipe)
+		hasMoreInLine := true
+		var err error
+		var line []byte
+		for hasMoreInLine {
+			line, hasMoreInLine, err = bio.ReadLine()
+			if err == nil {
+				//line from stdin
+				err = wgetOne(strings.TrimSpace(string(line)), w, outPipe, errPipe)
 
-					if err != nil {
-						return err, 1
-					}
-				} else {
-					//finish
-					hasMoreInLine = false
+				if err != nil {
+					return err, 1
 				}
+			} else {
+				//finish
+				hasMoreInLine = false
 			}
+		}
 
 	}
 	return nil, 0
@@ -247,6 +250,7 @@ func wgetOne(link string, options *Wgetter, outPipe io.Writer, errPipe io.Writer
 			fmt.Fprintf(errPipe, "Request header %s: %s\n", headerName, headerValue)
 		}
 	}
+
 	resp, err := client.Do(request)
 	if err != nil {
 		return err
@@ -309,9 +313,24 @@ func wgetOne(link string, options *Wgetter, outPipe io.Writer, errPipe io.Writer
 	tot := int64(0)
 	i := 0
 
+	tick := make(chan struct{})
+	var n, timeouts int
 	for {
-		// read a chunk
-		n, err := resp.Body.Read(buf)
+		go func() {
+			// read a chunk
+			n, err = resp.Body.Read(buf)
+			tick <- struct{}{}
+		}()
+		select {
+		case <-tick:
+		case <-time.Tick(time.Second * time.Duration(options.Timeout)):
+			if timeouts < options.Retries {
+				c := color.New(color.FgRed)
+				c.Fprintln(errPipe, "\ntime out reached, retrying...")
+				continue
+			}
+			return errors.New("timeout")
+		}
 		if err != nil && err != io.EOF {
 			return err
 		}

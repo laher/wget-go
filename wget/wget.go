@@ -38,8 +38,8 @@ type Wgetter struct {
 	// should be set explicitly to false when running from CLI. uggo will detect as best as possible
 	AlwaysPipeStdin      bool
 	OutputFilename       string
-	Timeout              int  //TODO
-	Retries              int  //TODO
+	Timeout              int
+	Retries              int
 	IsVerbose            bool //todo
 	DefaultPage          string
 	UserAgent            string //todo
